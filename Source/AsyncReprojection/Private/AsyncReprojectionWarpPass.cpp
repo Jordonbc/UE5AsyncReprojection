@@ -10,6 +10,7 @@
 
 #include "DynamicRHI.h"
 #include "HAL/IConsoleManager.h"
+#include "RHICommandList.h"
 #include "RenderGraphUtils.h"
 #include "ScreenPass.h"
 #include "SceneRenderTargetParameters.h"
@@ -406,6 +407,38 @@ static float GetAsyncPresentUiMaskThreshold()
 	return 0.08f;
 }
 
+static bool TryRestorePresentFallback(FRDGBuilder& GraphBuilder, FRDGTexture* BackBuffer, int32 PlayerIndex)
+{
+	if (BackBuffer == nullptr)
+	{
+		return false;
+	}
+
+	TRefCountPtr<IPooledRenderTarget> FallbackColor;
+	if (!FAsyncReprojectionFrameCache::Get().GetPresentFallback_RenderThread(PlayerIndex, FallbackColor) || !FallbackColor.IsValid())
+	{
+		return false;
+	}
+
+	FRDGTextureRef BackBufferRDG = static_cast<FRDGTextureRef>(BackBuffer);
+	FRDGTextureRef FallbackRDG = GraphBuilder.RegisterExternalTexture(FallbackColor, TEXT("AsyncReprojection.PresentFallbackColorRT"));
+	if (FallbackRDG == nullptr || BackBufferRDG == nullptr)
+	{
+		return false;
+	}
+
+	const FRDGTextureDesc BackBufferDesc = BackBufferRDG->Desc;
+	const FRDGTextureDesc FallbackDesc = FallbackRDG->Desc;
+	if (FallbackDesc.Extent != BackBufferDesc.Extent || FallbackDesc.Format != BackBufferDesc.Format)
+	{
+		FAsyncReprojectionFrameCache::Get().SetPresentFallbackValid_RenderThread(PlayerIndex, false);
+		return false;
+	}
+
+	AddCopyTexturePass(GraphBuilder, FallbackRDG, BackBufferRDG);
+	return true;
+}
+
 void FAsyncReprojectionCachedPresentWarp::AddPreSlatePassIfEnabled(FRHICommandListImmediate& RHICmdList, FRHIViewport* ViewportRHI)
 {
 	if (ViewportRHI == nullptr)
@@ -653,15 +686,27 @@ void FAsyncReprojectionCachedPresentWarp::AddBackBufferPassIfEnabled(FRDGBuilder
 		return;
 	}
 
+	const int32 PlayerIndex = 0;
+	FRDGTextureRef BackBufferRDG = static_cast<FRDGTextureRef>(BackBuffer);
+	const FRDGTextureDesc BackBufferDesc = BackBufferRDG->Desc;
+
+	FRHICommandListImmediate& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+	FAsyncReprojectionFrameCache::Get().EnsurePresentFallback_RenderThread(RHICmdList, PlayerIndex, BackBufferDesc.Extent, BackBufferDesc.Format);
+
 	TRefCountPtr<IPooledRenderTarget> CachedColor;
 	TRefCountPtr<IPooledRenderTarget> CachedDepthDeviceZ;
 	FAsyncReprojectionCachedFrameConstants CachedConstants;
-	if (!FAsyncReprojectionFrameCache::Get().GetCachedFrame_RenderThread(0, CachedColor, CachedDepthDeviceZ, CachedConstants))
+	if (!FAsyncReprojectionFrameCache::Get().GetCachedFrame_RenderThread(PlayerIndex, CachedColor, CachedDepthDeviceZ, CachedConstants))
 	{
 		FAsyncReprojectionAsyncPresent::Get().ReportCacheMiss_RenderThread();
+		const bool bRestoredFallback = TryRestorePresentFallback(GraphBuilder, BackBuffer, PlayerIndex);
+		if (bRestoredFallback)
+		{
+			FAsyncReprojectionAsyncPresent::Get().ReportCompositeSuccess_RenderThread(FPlatformTime::Seconds());
+		}
 		if ((GFrameCounterRenderThread - AsyncReprojectionWarpPrivate::LastCachedBackBufferWarnFrame) >= AsyncReprojectionWarpPrivate::VerboseLogFrameInterval)
 		{
-			UE_LOG(LogAsyncReprojection, Warning, TEXT("AsyncPresent BackBuffer warp skipped: cached frame is not available."));
+			UE_LOG(LogAsyncReprojection, Warning, TEXT("AsyncPresent BackBuffer warp skipped: cached frame is not available (fallback restored=%d)."), bRestoredFallback ? 1 : 0);
 			AsyncReprojectionWarpPrivate::LastCachedBackBufferWarnFrame = GFrameCounterRenderThread;
 		}
 		return;
@@ -670,15 +715,20 @@ void FAsyncReprojectionCachedPresentWarp::AddBackBufferPassIfEnabled(FRDGBuilder
 	if (!CachedConstants.bValid || !CachedColor.IsValid() || !CachedDepthDeviceZ.IsValid())
 	{
 		FAsyncReprojectionAsyncPresent::Get().ReportCacheMiss_RenderThread();
+		const bool bRestoredFallback = TryRestorePresentFallback(GraphBuilder, BackBuffer, PlayerIndex);
+		if (bRestoredFallback)
+		{
+			FAsyncReprojectionAsyncPresent::Get().ReportCompositeSuccess_RenderThread(FPlatformTime::Seconds());
+		}
 		if ((GFrameCounterRenderThread - AsyncReprojectionWarpPrivate::LastCachedBackBufferWarnFrame) >= AsyncReprojectionWarpPrivate::VerboseLogFrameInterval)
 		{
-			UE_LOG(LogAsyncReprojection, Error, TEXT("AsyncPresent BackBuffer warp skipped: cached frame resources are invalid."));
+			UE_LOG(LogAsyncReprojection, Error, TEXT("AsyncPresent BackBuffer warp skipped: cached frame resources are invalid (fallback restored=%d)."), bRestoredFallback ? 1 : 0);
 			AsyncReprojectionWarpPrivate::LastCachedBackBufferWarnFrame = GFrameCounterRenderThread;
 		}
 		return;
 	}
 
-	FAsyncReprojectionCameraSnapshot LatestCamera = FAsyncReprojectionCameraTracker::Get().GetLatestCamera(0);
+	FAsyncReprojectionCameraSnapshot LatestCamera = FAsyncReprojectionCameraTracker::Get().GetLatestCamera(PlayerIndex);
 	if (!LatestCamera.bIsValid)
 	{
 		if ((GFrameCounterRenderThread - AsyncReprojectionWarpPrivate::LastCachedBackBufferWarnFrame) >= AsyncReprojectionWarpPrivate::VerboseLogFrameInterval)
@@ -709,7 +759,7 @@ void FAsyncReprojectionCachedPresentWarp::AddBackBufferPassIfEnabled(FRDGBuilder
 	FRotator RawDeltaRot = RawDeltaQuat.Rotator();
 	FVector RawDeltaTranslation = LatestLocation - RenderedLocation;
 
-	const FAsyncReprojectionRenderedViewSnapshot RenderedViewSnapshot = FAsyncReprojectionCameraTracker::Get().GetLatestRenderedView_RenderThread(0);
+	const FAsyncReprojectionRenderedViewSnapshot RenderedViewSnapshot = FAsyncReprojectionCameraTracker::Get().GetLatestRenderedView_RenderThread(PlayerIndex);
 	const FQuat InputDeltaQuat = ComputeInputDrivenDeltaQuat_RenderThread(CVarState, RenderedViewSnapshot, RenderedRotation);
 	RawDeltaQuat = InputDeltaQuat * RawDeltaQuat;
 	RawDeltaRot = RawDeltaQuat.Rotator();
@@ -796,9 +846,6 @@ void FAsyncReprojectionCachedPresentWarp::AddBackBufferPassIfEnabled(FRDGBuilder
 	const FMatrix LatestTranslatedWorldToClip = LatestTranslatedWorldToView * AsyncReprojectionWarpPrivate::ToFMatrix(Projection);
 
 	const bool bDoTranslation = CVarState.bEnableTranslationWarp && CVarState.bAsyncPresentReprojectMovement;
-
-	FRDGTextureRef BackBufferRDG = static_cast<FRDGTextureRef>(BackBuffer);
-	const FRDGTextureDesc BackBufferDesc = BackBufferRDG->Desc;
 
 	FRDGTextureRef UiCopy = GraphBuilder.CreateTexture(BackBufferDesc, TEXT("AsyncReprojection.AsyncPresent.UiCopy"));
 	AddCopyTexturePass(GraphBuilder, BackBufferRDG, UiCopy);

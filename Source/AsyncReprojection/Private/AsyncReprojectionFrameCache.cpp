@@ -210,7 +210,7 @@ bool FAsyncReprojectionFrameCache::HasCachedFrame_AnyThread(int32 PlayerIndex) c
 	return LastValidCaptureFrameCounter[PlayerIndex].load(std::memory_order_relaxed) != 0;
 }
 
-bool FAsyncReprojectionFrameCache::HasUsableCachedFrame_AnyThread(int32 PlayerIndex, double NowSeconds, int32 MaxCacheAgeMs, uint64 MinFrameLag) const
+bool FAsyncReprojectionFrameCache::HasUsableCachedFrame_AnyThread(int32 PlayerIndex, double NowSeconds, int32 MaxCacheAgeMs) const
 {
 	if (PlayerIndex < 0 || PlayerIndex >= MaxCachedPlayers)
 	{
@@ -236,9 +236,7 @@ bool FAsyncReprojectionFrameCache::HasUsableCachedFrame_AnyThread(int32 PlayerIn
 		return false;
 	}
 
-	const uint64 RequiredFrameLag = FMath::Max<uint64>(1, MinFrameLag);
-	const uint64 CurrentFrameCounter = GFrameCounter;
-	return CurrentFrameCounter > (CaptureFrameCounter + RequiredFrameLag - 1);
+	return true;
 }
 
 double FAsyncReprojectionFrameCache::GetLastCaptureTimeSeconds_AnyThread(int32 PlayerIndex) const
@@ -312,6 +310,88 @@ void FAsyncReprojectionFrameCache::EnsureTargets_RenderThread(FRHICommandListImm
 	{
 		LastValidCaptureFrameCounter[PlayerIndex].store(0, std::memory_order_relaxed);
 		LastCaptureTimeSeconds[PlayerIndex].store(0.0, std::memory_order_relaxed);
+	}
+}
+
+void FAsyncReprojectionFrameCache::EnsurePresentFallback_RenderThread(FRHICommandListImmediate& RHICmdList, int32 PlayerIndex, const FIntPoint& Extent, EPixelFormat ColorFormat)
+{
+	bool bNeedsAlloc = false;
+	{
+		FRWScopeLock Lock(CacheLock, SLT_ReadOnly);
+		if (const FCachedTargets* Existing = CacheByPlayer.Find(PlayerIndex))
+		{
+			if (!Existing->PresentFallbackColor.IsValid())
+			{
+				bNeedsAlloc = true;
+			}
+			else
+			{
+				const FIntPoint ExistingExtent = Existing->PresentFallbackColor->GetDesc().Extent;
+				bNeedsAlloc = (ExistingExtent != Extent) || (Existing->PresentFallbackColor->GetDesc().Format != ColorFormat);
+			}
+		}
+		else
+		{
+			bNeedsAlloc = true;
+		}
+	}
+
+	if (!bNeedsAlloc)
+	{
+		return;
+	}
+
+	FPooledRenderTargetDesc FallbackDesc = FPooledRenderTargetDesc::Create2DDesc(
+		Extent,
+		ColorFormat,
+		FClearValueBinding::Black,
+		TexCreate_None,
+		TexCreate_ShaderResource | TexCreate_RenderTargetable,
+		false);
+
+	TRefCountPtr<IPooledRenderTarget> NewFallback;
+	GRenderTargetPool.FindFreeElement(RHICmdList, FallbackDesc, NewFallback, TEXT("AsyncReprojection.PresentFallbackColor"));
+
+	{
+		FRWScopeLock Lock(CacheLock, SLT_Write);
+		FCachedTargets& Slot = CacheByPlayer.FindOrAdd(PlayerIndex);
+		Slot.PresentFallbackColor = NewFallback;
+		Slot.bPresentFallbackValid = false;
+	}
+}
+
+bool FAsyncReprojectionFrameCache::GetPresentFallback_RenderThread(int32 PlayerIndex, TRefCountPtr<IPooledRenderTarget>& OutFallbackColor) const
+{
+	FRWScopeLock Lock(CacheLock, SLT_ReadOnly);
+	const FCachedTargets* Cached = CacheByPlayer.Find(PlayerIndex);
+	if (Cached == nullptr || !Cached->bPresentFallbackValid || !Cached->PresentFallbackColor.IsValid())
+	{
+		return false;
+	}
+
+	OutFallbackColor = Cached->PresentFallbackColor;
+	return true;
+}
+
+bool FAsyncReprojectionFrameCache::GetPresentFallbackTarget_RenderThread(int32 PlayerIndex, TRefCountPtr<IPooledRenderTarget>& OutFallbackColor) const
+{
+	FRWScopeLock Lock(CacheLock, SLT_ReadOnly);
+	const FCachedTargets* Cached = CacheByPlayer.Find(PlayerIndex);
+	if (Cached == nullptr || !Cached->PresentFallbackColor.IsValid())
+	{
+		return false;
+	}
+
+	OutFallbackColor = Cached->PresentFallbackColor;
+	return true;
+}
+
+void FAsyncReprojectionFrameCache::SetPresentFallbackValid_RenderThread(int32 PlayerIndex, bool bValid)
+{
+	FRWScopeLock Lock(CacheLock, SLT_Write);
+	if (FCachedTargets* Cached = CacheByPlayer.Find(PlayerIndex))
+	{
+		Cached->bPresentFallbackValid = bValid && Cached->PresentFallbackColor.IsValid();
 	}
 }
 

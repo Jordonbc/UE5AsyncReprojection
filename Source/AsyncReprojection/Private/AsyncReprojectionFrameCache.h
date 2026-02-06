@@ -55,8 +55,13 @@ public:
 	bool GetCachedFrame_RenderThread(int32 PlayerIndex, TRefCountPtr<IPooledRenderTarget>& OutColor, TRefCountPtr<IPooledRenderTarget>& OutDepthDeviceZ, FAsyncReprojectionCachedFrameConstants& OutConstants) const;
 
 	bool HasCachedFrame_AnyThread(int32 PlayerIndex) const;
-	bool HasUsableCachedFrame_AnyThread(int32 PlayerIndex, double NowSeconds, int32 MaxCacheAgeMs, uint64 MinFrameLag = 1) const;
+	bool HasUsableCachedFrame_AnyThread(int32 PlayerIndex, double NowSeconds, int32 MaxCacheAgeMs) const;
 	double GetLastCaptureTimeSeconds_AnyThread(int32 PlayerIndex) const;
+
+	void EnsurePresentFallback_RenderThread(FRHICommandListImmediate& RHICmdList, int32 PlayerIndex, const FIntPoint& Extent, EPixelFormat ColorFormat);
+	bool GetPresentFallback_RenderThread(int32 PlayerIndex, TRefCountPtr<IPooledRenderTarget>& OutFallbackColor) const;
+	bool GetPresentFallbackTarget_RenderThread(int32 PlayerIndex, TRefCountPtr<IPooledRenderTarget>& OutFallbackColor) const;
+	void SetPresentFallbackValid_RenderThread(int32 PlayerIndex, bool bValid);
 
 private:
 	FAsyncReprojectionFrameCache() = default;
@@ -71,6 +76,8 @@ private:
 	{
 		TRefCountPtr<IPooledRenderTarget> Color;
 		TRefCountPtr<IPooledRenderTarget> DepthDeviceZ;
+		TRefCountPtr<IPooledRenderTarget> PresentFallbackColor;
+		bool bPresentFallbackValid = false;
 		FAsyncReprojectionCachedFrameConstants Constants;
 	};
 

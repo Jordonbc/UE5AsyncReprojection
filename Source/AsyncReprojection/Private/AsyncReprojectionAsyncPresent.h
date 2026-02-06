@@ -28,6 +28,11 @@ public:
 	 */
 	void ReportCacheMiss_RenderThread();
 
+	/**
+	 * Signals that async-present produced a valid composited frame on the render thread.
+	 */
+	void ReportCompositeSuccess_RenderThread(double PresentTimeSeconds);
+
 private:
 	FAsyncReprojectionAsyncPresent() = default;
 	~FAsyncReprojectionAsyncPresent() = default;
@@ -53,6 +58,7 @@ private:
 	bool bHasLoggedState = false;
 	uint64 LastVerboseLogFrame = 0;
 	TAtomic<bool> bForceWorldRenderNextFrame { false };
+	TAtomic<double> LastSuccessfulCompositeTimeSeconds { 0.0 };
 
 	FDelegateHandle BeginFrameHandle;
 };

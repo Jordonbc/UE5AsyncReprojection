@@ -35,6 +35,7 @@ void FAsyncReprojectionAsyncPresent::Startup()
 	bSkipWorldRenderingThisFrame = false;
 	bHasLoggedState = false;
 	LastVerboseLogFrame = 0;
+	LastSuccessfulCompositeTimeSeconds.Store(0.0);
 
 	BeginFrameHandle = FCoreDelegates::OnBeginFrame.AddRaw(this, &FAsyncReprojectionAsyncPresent::OnBeginFrame_GameThread);
 	UE_LOG(LogAsyncReprojection, Log, TEXT("AsyncPresent started (OnBeginFrame registered)."));
@@ -57,6 +58,7 @@ void FAsyncReprojectionAsyncPresent::Shutdown()
 		FCoreDelegates::OnBeginFrame.Remove(BeginFrameHandle);
 		BeginFrameHandle = FDelegateHandle();
 	}
+	LastSuccessfulCompositeTimeSeconds.Store(0.0);
 
 	RestoreWorldRenderPreference_GameThread();
 	UE_LOG(LogAsyncReprojection, Log, TEXT("AsyncPresent shut down."));
@@ -71,6 +73,11 @@ bool FAsyncReprojectionAsyncPresent::ShouldSkipWorldRendering() const
 void FAsyncReprojectionAsyncPresent::ReportCacheMiss_RenderThread()
 {
 	bForceWorldRenderNextFrame.Store(true);
+}
+
+void FAsyncReprojectionAsyncPresent::ReportCompositeSuccess_RenderThread(double PresentTimeSeconds)
+{
+	LastSuccessfulCompositeTimeSeconds.Store(PresentTimeSeconds);
 }
 
 void FAsyncReprojectionAsyncPresent::OnBeginFrame_GameThread()
@@ -94,10 +101,17 @@ void FAsyncReprojectionAsyncPresent::OnBeginFrame_GameThread()
 
 	bool bEnableWorldRendering = true;
 	const bool bHasCachedFrame = FAsyncReprojectionFrameCache::Get().HasCachedFrame_AnyThread(0);
-	const bool bHasUsableCachedFrame = FAsyncReprojectionFrameCache::Get().HasUsableCachedFrame_AnyThread(0, NowSeconds, CVarState.AsyncPresentMaxCacheAgeMs, 1);
+	const bool bHasUsableCachedFrame = FAsyncReprojectionFrameCache::Get().HasUsableCachedFrame_AnyThread(0, NowSeconds, CVarState.AsyncPresentMaxCacheAgeMs);
 	const bool bForceWorldRender = bForceWorldRenderNextFrame.Exchange(false);
+	const double LastCompositeSuccessSeconds = LastSuccessfulCompositeTimeSeconds.Load();
+	const double MaxCompositeStaleSeconds = FMath::Max(2.0 * PeriodSeconds, 0.1);
+	const bool bHasRecentCompositeSuccess = LastCompositeSuccessSeconds > 0.0 && (NowSeconds - LastCompositeSuccessSeconds) <= MaxCompositeStaleSeconds;
 
 	if (bForceWorldRender)
+	{
+		bEnableWorldRendering = true;
+	}
+	else if (!bHasRecentCompositeSuccess)
 	{
 		bEnableWorldRendering = true;
 	}
@@ -139,10 +153,11 @@ void FAsyncReprojectionAsyncPresent::OnBeginFrame_GameThread()
 		UE_LOG(
 			LogAsyncReprojection,
 			Log,
-			TEXT("AsyncPresent state changed: SkipWorld=%d HasCache=%d HasUsableCache=%d ForceWorldRender=%d Freeze=%d TargetFPS=%.2f"),
+			TEXT("AsyncPresent state changed: SkipWorld=%d HasCache=%d HasUsableCache=%d HasRecentComposite=%d ForceWorldRender=%d Freeze=%d TargetFPS=%.2f"),
 			bSkipWorld ? 1 : 0,
 			bHasCachedFrame ? 1 : 0,
 			bHasUsableCachedFrame ? 1 : 0,
+			bHasRecentCompositeSuccess ? 1 : 0,
 			bForceWorldRender ? 1 : 0,
 			CVarState.bAsyncPresentFreezeWorldRendering ? 1 : 0,
 			CVarState.AsyncPresentTargetWorldRenderFPS);
