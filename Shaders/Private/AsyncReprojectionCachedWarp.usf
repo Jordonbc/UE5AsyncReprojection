@@ -20,6 +20,8 @@ float4 BufferSizeAndInvSize;
 
 float WarpWeight;
 float2 CachedInvSize;
+uint StretchBorders;
+uint OcclusionFallback;
 uint DebugOverlay;
 
 static float2 PixelToNDC(float2 PixelCenter)
@@ -48,6 +50,29 @@ static float2 ComputeRotationOnlySourcePixel(float2 OutPixelCenter, float4x4 Vie
 	const float4 RenderedClip = mul(float4(RenderedViewPos, 1.0f), ViewToClip);
 	const float2 RenderedNDC = RenderedClip.xy / max(RenderedClip.w, 1e-6f);
 	return NDCToPixel(RenderedNDC);
+}
+
+static bool IsInBoundsUV(float2 UV)
+{
+	return UV.x >= 0.0f && UV.x <= 1.0f && UV.y >= 0.0f && UV.y <= 1.0f;
+}
+
+static float3 SampleWorldWithBorderPolicy(float2 UV, out bool bValid)
+{
+	if (IsInBoundsUV(UV))
+	{
+		bValid = true;
+		return CachedColorTexture.SampleLevel(CachedColorSampler, UV, 0).rgb;
+	}
+
+	if (StretchBorders != 0u)
+	{
+		bValid = true;
+		return CachedColorTexture.SampleLevel(CachedColorSampler, saturate(UV), 0).rgb;
+	}
+
+	bValid = false;
+	return float3(0.0f, 0.0f, 0.0f);
 }
 
 void MainPS(
@@ -108,7 +133,38 @@ void MainPS(
 
 	const float2 SourcePixelCenter = SourcePixelCoord + 0.5f;
 	const float2 SourceUV = SourcePixelCenter * CachedInvSize;
-	const float3 WarpedColor = CachedColorTexture.SampleLevel(CachedColorSampler, SourceUV, 0).rgb;
+	bool bSourceValid = false;
+	float3 WarpedColor = SampleWorldWithBorderPolicy(SourceUV, bSourceValid);
+
+	if (!bSourceValid)
+	{
+		OutColor = float4(0.0f, 0.0f, 0.0f, 1.0f);
+		return;
+	}
+
+	if (OcclusionFallback != 0u)
+	{
+		const float2 OnePixel = CachedInvSize;
+		const float2 UVL = saturate(SourceUV + float2(-OnePixel.x, 0.0f));
+		const float2 UVR = saturate(SourceUV + float2( OnePixel.x, 0.0f));
+		const float2 UVU = saturate(SourceUV + float2(0.0f, -OnePixel.y));
+		const float2 UVD = saturate(SourceUV + float2(0.0f,  OnePixel.y));
+
+		const float DZC = CachedDepthDeviceZTexture.SampleLevel(CachedDepthSampler, saturate(SourceUV), 0);
+		const float DZL = CachedDepthDeviceZTexture.SampleLevel(CachedDepthSampler, UVL, 0);
+		const float DZR = CachedDepthDeviceZTexture.SampleLevel(CachedDepthSampler, UVR, 0);
+		const float DZU = CachedDepthDeviceZTexture.SampleLevel(CachedDepthSampler, UVU, 0);
+		const float DZD = CachedDepthDeviceZTexture.SampleLevel(CachedDepthSampler, UVD, 0);
+
+		float BestDepth = DZC;
+		float2 BestUV = saturate(SourceUV);
+		if (DZL > BestDepth) { BestDepth = DZL; BestUV = UVL; }
+		if (DZR > BestDepth) { BestDepth = DZR; BestUV = UVR; }
+		if (DZU > BestDepth) { BestDepth = DZU; BestUV = UVU; }
+		if (DZD > BestDepth) { BestDepth = DZD; BestUV = UVD; }
+
+		WarpedColor = CachedColorTexture.SampleLevel(CachedColorSampler, BestUV, 0).rgb;
+	}
 
 	const float Weight = saturate(WarpWeight);
 	OutColor = float4(lerp(UnwarpedColor, WarpedColor, Weight), 1.0f);

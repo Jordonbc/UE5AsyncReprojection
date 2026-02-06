@@ -85,7 +85,8 @@ void FAsyncReprojectionAsyncPresent::OnBeginFrame_GameThread()
 	check(IsInGameThread());
 
 	const FAsyncReprojectionCVarState CVarState = FAsyncReprojectionCVars::Get();
-	if (!CVarState.bAsyncPresent)
+	const bool bAsyncPipelineEnabled = CVarState.bAsyncPresent || CVarState.TimewarpMode != EAsyncReprojectionTimewarpMode::FullRender;
+	if (!bAsyncPipelineEnabled)
 	{
 		{
 			FScopeLock Lock(&StateLock);
@@ -100,18 +101,20 @@ void FAsyncReprojectionAsyncPresent::OnBeginFrame_GameThread()
 	const double PeriodSeconds = 1.0 / FMath::Max(1.0f, CVarState.AsyncPresentTargetWorldRenderFPS);
 
 	bool bEnableWorldRendering = true;
+	const bool bAllowSkipping = CVarState.TimewarpMode != EAsyncReprojectionTimewarpMode::FullRender;
 	const bool bHasCachedFrame = FAsyncReprojectionFrameCache::Get().HasCachedFrame_AnyThread(0);
 	const bool bHasUsableCachedFrame = FAsyncReprojectionFrameCache::Get().HasUsableCachedFrame_AnyThread(0, NowSeconds, CVarState.AsyncPresentMaxCacheAgeMs);
 	const bool bForceWorldRender = bForceWorldRenderNextFrame.Exchange(false);
 	const double LastCompositeSuccessSeconds = LastSuccessfulCompositeTimeSeconds.Load();
 	const double MaxCompositeStaleSeconds = FMath::Max(2.0 * PeriodSeconds, 0.1);
+	const bool bHasCompositeSuccessHistory = LastCompositeSuccessSeconds > 0.0;
 	const bool bHasRecentCompositeSuccess = LastCompositeSuccessSeconds > 0.0 && (NowSeconds - LastCompositeSuccessSeconds) <= MaxCompositeStaleSeconds;
 
-	if (bForceWorldRender)
+	if (!bAllowSkipping || bForceWorldRender)
 	{
 		bEnableWorldRendering = true;
 	}
-	else if (!bHasRecentCompositeSuccess)
+	else if (bHasCompositeSuccessHistory && !bHasRecentCompositeSuccess)
 	{
 		bEnableWorldRendering = true;
 	}
@@ -119,7 +122,7 @@ void FAsyncReprojectionAsyncPresent::OnBeginFrame_GameThread()
 	{
 		bEnableWorldRendering = true;
 	}
-	else if (CVarState.bAsyncPresentFreezeWorldRendering)
+	else if (CVarState.TimewarpMode == EAsyncReprojectionTimewarpMode::FreezeAndWarp || CVarState.bAsyncPresentFreezeWorldRendering)
 	{
 		bEnableWorldRendering = false;
 	}
@@ -153,13 +156,14 @@ void FAsyncReprojectionAsyncPresent::OnBeginFrame_GameThread()
 		UE_LOG(
 			LogAsyncReprojection,
 			Log,
-			TEXT("AsyncPresent state changed: SkipWorld=%d HasCache=%d HasUsableCache=%d HasRecentComposite=%d ForceWorldRender=%d Freeze=%d TargetFPS=%.2f"),
+			TEXT("AsyncPresent state changed: SkipWorld=%d HasCache=%d HasUsableCache=%d HasRecentComposite=%d ForceWorldRender=%d Freeze=%d Mode=%d TargetFPS=%.2f"),
 			bSkipWorld ? 1 : 0,
 			bHasCachedFrame ? 1 : 0,
 			bHasUsableCachedFrame ? 1 : 0,
 			bHasRecentCompositeSuccess ? 1 : 0,
 			bForceWorldRender ? 1 : 0,
 			CVarState.bAsyncPresentFreezeWorldRendering ? 1 : 0,
+			int32(CVarState.TimewarpMode),
 			CVarState.AsyncPresentTargetWorldRenderFPS);
 
 		bLastLoggedSkipWorldRendering = bSkipWorld;

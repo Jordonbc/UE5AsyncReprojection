@@ -41,6 +41,35 @@ enum class EAsyncReprojectionWarpPoint : uint8
 };
 
 /**
+ * @enum EAsyncReprojectionTimewarpMode
+ *
+ * Unity-style async timewarp behavior modes.
+ */
+UENUM(BlueprintType)
+enum class EAsyncReprojectionTimewarpMode : uint8
+{
+	/**
+	 * Render every frame (no cached-frame async timewarp).
+	 */
+	FullRender UMETA(DisplayName = "Full Render"),
+
+	/**
+	 * Freeze world rendering and continuously timewarp the frozen frame.
+	 */
+	FreezeAndWarp UMETA(DisplayName = "Freeze And Warp"),
+
+	/**
+	 * Render world at target cadence and present cached frames without warp on skipped frames.
+	 */
+	DecimatedNoWarp UMETA(DisplayName = "Decimated No Warp"),
+
+	/**
+	 * Render world at target cadence and timewarp cached frames on skipped frames.
+	 */
+	DecimatedAndWarp UMETA(DisplayName = "Decimated And Warp"),
+};
+
+/**
  * @struct FAsyncReprojectionDelta
  *
  * Delta between rendered and latest camera transforms.

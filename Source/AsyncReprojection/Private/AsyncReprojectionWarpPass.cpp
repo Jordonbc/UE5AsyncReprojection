@@ -119,6 +119,8 @@ namespace AsyncReprojectionWarpPrivate
 				SHADER_PARAMETER(FVector4f, BufferSizeAndInvSize)
 				SHADER_PARAMETER(float, WarpWeight)
 				SHADER_PARAMETER(FVector2f, CachedInvSize)
+				SHADER_PARAMETER(uint32, StretchBorders)
+				SHADER_PARAMETER(uint32, OcclusionFallback)
 				SHADER_PARAMETER(uint32, DebugOverlay)
 
 				RENDER_TARGET_BINDING_SLOTS()
@@ -162,6 +164,8 @@ namespace AsyncReprojectionWarpPrivate
 			SHADER_PARAMETER(FVector2f, CachedInvSize)
 			SHADER_PARAMETER(FVector2f, UiInvSize)
 			SHADER_PARAMETER(float, UiMaskThreshold)
+			SHADER_PARAMETER(uint32, StretchBorders)
+			SHADER_PARAMETER(uint32, OcclusionFallback)
 			SHADER_PARAMETER(uint32, DebugOverlay)
 
 			RENDER_TARGET_BINDING_SLOTS()
@@ -256,7 +260,8 @@ void FAsyncReprojectionBackBufferWarp::AddPassIfEnabled(FRDGBuilder& GraphBuilde
 	(void)SlateWindow;
 
 	const FAsyncReprojectionCVarState CVarState = FAsyncReprojectionCVars::Get();
-	if (CVarState.bAsyncPresent && FAsyncReprojectionAsyncPresent::Get().ShouldSkipWorldRendering())
+	const bool bAsyncPipelineEnabled = CVarState.bAsyncPresent || CVarState.TimewarpMode != EAsyncReprojectionTimewarpMode::FullRender;
+	if (bAsyncPipelineEnabled && FAsyncReprojectionAsyncPresent::Get().ShouldSkipWorldRendering())
 	{
 		return;
 	}
@@ -447,7 +452,12 @@ void FAsyncReprojectionCachedPresentWarp::AddPreSlatePassIfEnabled(FRHICommandLi
 	}
 
 	const FAsyncReprojectionCVarState CVarState = FAsyncReprojectionCVars::Get();
-	if (!CVarState.bAsyncPresent || !CVarState.bAsyncPresentAllowHUDStable)
+	const bool bAsyncPipelineEnabled = CVarState.bAsyncPresent || CVarState.TimewarpMode != EAsyncReprojectionTimewarpMode::FullRender;
+	if (!bAsyncPipelineEnabled || !CVarState.bAsyncPresentAllowHUDStable)
+	{
+		return;
+	}
+	if (CVarState.TimewarpMode == EAsyncReprojectionTimewarpMode::FullRender || CVarState.TimewarpMode == EAsyncReprojectionTimewarpMode::DecimatedNoWarp)
 	{
 		return;
 	}
@@ -646,6 +656,8 @@ void FAsyncReprojectionCachedPresentWarp::AddPreSlatePassIfEnabled(FRHICommandLi
 		PassParameters->BufferSizeAndInvSize = FVector4f(float(CachedConstants.BufferExtent.X), float(CachedConstants.BufferExtent.Y), 1.0f / float(CachedConstants.BufferExtent.X), 1.0f / float(CachedConstants.BufferExtent.Y));
 		PassParameters->WarpWeight = Weight;
 		PassParameters->CachedInvSize = FVector2f(1.0f / float(CachedConstants.BufferExtent.X), 1.0f / float(CachedConstants.BufferExtent.Y));
+		PassParameters->StretchBorders = CVarState.bAsyncPresentStretchBorders ? 1u : 0u;
+		PassParameters->OcclusionFallback = CVarState.bAsyncPresentOcclusionFallback ? 1u : 0u;
 		PassParameters->DebugOverlay = CVarState.bDebugOverlay ? 1u : 0u;
 		PassParameters->RenderTargets[0] = FRenderTargetBinding(BackBufferRDG, ERenderTargetLoadAction::ELoad);
 
@@ -676,7 +688,12 @@ void FAsyncReprojectionCachedPresentWarp::AddBackBufferPassIfEnabled(FRDGBuilder
 	}
 
 	const FAsyncReprojectionCVarState CVarState = FAsyncReprojectionCVars::Get();
-	if (!CVarState.bAsyncPresent)
+	const bool bAsyncPipelineEnabled = CVarState.bAsyncPresent || CVarState.TimewarpMode != EAsyncReprojectionTimewarpMode::FullRender;
+	if (!bAsyncPipelineEnabled)
+	{
+		return;
+	}
+	if (CVarState.TimewarpMode == EAsyncReprojectionTimewarpMode::FullRender)
 	{
 		return;
 	}
@@ -802,6 +819,10 @@ void FAsyncReprojectionCachedPresentWarp::AddBackBufferPassIfEnabled(FRDGBuilder
 	{
 		Weight = 0.0f;
 	}
+	if (CVarState.TimewarpMode == EAsyncReprojectionTimewarpMode::DecimatedNoWarp)
+	{
+		Weight = 0.0f;
+	}
 
 	const float MaxRotClamp = FMath::Max3(CVarState.MaxYawDegreesPerFrame, CVarState.MaxPitchDegreesPerFrame, CVarState.MaxRollDegreesPerFrame);
 	const float MaxTransClamp = CVarState.MaxTranslationCmPerFrame;
@@ -882,6 +903,8 @@ void FAsyncReprojectionCachedPresentWarp::AddBackBufferPassIfEnabled(FRDGBuilder
 	PassParameters->CachedInvSize = FVector2f(1.0f / float(CachedConstants.BufferExtent.X), 1.0f / float(CachedConstants.BufferExtent.Y));
 	PassParameters->UiInvSize = FVector2f(1.0f / float(BackBufferDesc.Extent.X), 1.0f / float(BackBufferDesc.Extent.Y));
 	PassParameters->UiMaskThreshold = GetAsyncPresentUiMaskThreshold();
+	PassParameters->StretchBorders = CVarState.bAsyncPresentStretchBorders ? 1u : 0u;
+	PassParameters->OcclusionFallback = CVarState.bAsyncPresentOcclusionFallback ? 1u : 0u;
 	PassParameters->DebugOverlay = CVarState.bDebugOverlay ? 1u : 0u;
 	PassParameters->RenderTargets[0] = FRenderTargetBinding(BackBufferRDG, ERenderTargetLoadAction::ELoad);
 
@@ -898,4 +921,21 @@ void FAsyncReprojectionCachedPresentWarp::AddBackBufferPassIfEnabled(FRDGBuilder
 		PixelShader,
 		PassParameters,
 		EScreenPassDrawFlags::None);
+
+	TRefCountPtr<IPooledRenderTarget> FallbackTarget;
+	if (FAsyncReprojectionFrameCache::Get().GetPresentFallbackTarget_RenderThread(PlayerIndex, FallbackTarget) && FallbackTarget.IsValid())
+	{
+		FRDGTextureRef FallbackTargetRDG = GraphBuilder.RegisterExternalTexture(FallbackTarget, TEXT("AsyncReprojection.PresentFallbackColorRT"));
+		if (FallbackTargetRDG != nullptr && FallbackTargetRDG->Desc.Extent == BackBufferDesc.Extent && FallbackTargetRDG->Desc.Format == BackBufferDesc.Format)
+		{
+			AddCopyTexturePass(GraphBuilder, BackBufferRDG, FallbackTargetRDG);
+			FAsyncReprojectionFrameCache::Get().SetPresentFallbackValid_RenderThread(PlayerIndex, true);
+		}
+		else
+		{
+			FAsyncReprojectionFrameCache::Get().SetPresentFallbackValid_RenderThread(PlayerIndex, false);
+		}
+	}
+
+	FAsyncReprojectionAsyncPresent::Get().ReportCompositeSuccess_RenderThread(FPlatformTime::Seconds());
 }

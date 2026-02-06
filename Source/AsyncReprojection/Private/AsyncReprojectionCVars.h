@@ -9,6 +9,7 @@ struct FAsyncReprojectionCVarState
 {
 	EAsyncReprojectionMode Mode = EAsyncReprojectionMode::Auto;
 	EAsyncReprojectionWarpPoint WarpPoint = EAsyncReprojectionWarpPoint::PostRenderViewFamily;
+	EAsyncReprojectionTimewarpMode TimewarpMode = EAsyncReprojectionTimewarpMode::DecimatedAndWarp;
 
 	bool bAsyncPresent = false;
 	float AsyncPresentTargetWorldRenderFPS = 30.0f;
@@ -16,6 +17,8 @@ struct FAsyncReprojectionCVarState
 	int32 AsyncPresentMaxCacheAgeMs = 250;
 	bool bAsyncPresentAllowHUDStable = true;
 	bool bAsyncPresentReprojectMovement = true;
+	bool bAsyncPresentStretchBorders = false;
+	bool bAsyncPresentOcclusionFallback = true;
 
 	bool bEnableRotationWarp = true;
 	bool bEnableTranslationWarp = true;

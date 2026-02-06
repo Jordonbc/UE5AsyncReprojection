@@ -10,11 +10,11 @@ namespace AsyncReprojectionCVars
 {
 	static TAutoConsoleVariable<int32> CVarMode(
 		TEXT("r.AsyncReprojection.Mode"),
-		2,
+		1,
 		TEXT("AsyncReprojection mode.\n")
 		TEXT("0: Off\n")
-		TEXT("1: On\n")
-		TEXT("2: Auto (default)\n"),
+		TEXT("1: On (default)\n")
+		TEXT("2: Auto\n"),
 		ECVF_RenderThreadSafe);
 
 	static TAutoConsoleVariable<int32> CVarWarpPoint(
@@ -23,6 +23,16 @@ namespace AsyncReprojectionCVars
 		TEXT("Where to apply the warp.\n")
 		TEXT("0: EndOfPostProcess\n")
 		TEXT("1: PostRenderViewFamily (default)\n"),
+		ECVF_RenderThreadSafe);
+
+	static TAutoConsoleVariable<int32> CVarTimewarpMode(
+		TEXT("r.AsyncReprojection.TimewarpMode"),
+		3,
+		TEXT("Unity-style timewarp behavior mode.\n")
+		TEXT("0: FullRender\n")
+		TEXT("1: FreezeAndWarp\n")
+		TEXT("2: DecimatedNoWarp\n")
+		TEXT("3: DecimatedAndWarp (default)\n"),
 		ECVF_RenderThreadSafe);
 
 	static TAutoConsoleVariable<int32> CVarEnableRotationWarp(
@@ -51,7 +61,7 @@ namespace AsyncReprojectionCVars
 
 	static TAutoConsoleVariable<int32> CVarAsyncPresent(
 		TEXT("r.AsyncReprojection.AsyncPresent"),
-		0,
+		1,
 		TEXT("Enable Async Present: decimate world rendering and reproject cached scene color on intermediate frames.\n"),
 		ECVF_RenderThreadSafe);
 
@@ -89,6 +99,18 @@ namespace AsyncReprojectionCVars
 		TEXT("r.AsyncReprojection.AsyncPresent.ReprojectMovement"),
 		1,
 		TEXT("Async Present: allow translation warp on cached frames using cached depth.\n"),
+		ECVF_RenderThreadSafe);
+
+	static TAutoConsoleVariable<int32> CVarAsyncPresentStretchBorders(
+		TEXT("r.AsyncReprojection.AsyncPresent.StretchBorders"),
+		0,
+		TEXT("Async Present: stretch/clamp out-of-bounds samples instead of returning black borders.\n"),
+		ECVF_RenderThreadSafe);
+
+	static TAutoConsoleVariable<int32> CVarAsyncPresentOcclusionFallback(
+		TEXT("r.AsyncReprojection.AsyncPresent.OcclusionFallback"),
+		1,
+		TEXT("Async Present: use local depth-based neighbor fallback to reduce disocclusion holes.\n"),
 		ECVF_RenderThreadSafe);
 
 	static TAutoConsoleVariable<int32> CVarInputDrivenPose(
@@ -215,6 +237,7 @@ void FAsyncReprojectionCVars::Init()
 
 	SetInt(TEXT("r.AsyncReprojection.Mode"), static_cast<int32>(Settings->Mode));
 	SetInt(TEXT("r.AsyncReprojection.WarpPoint"), static_cast<int32>(Settings->WarpPoint));
+	SetInt(TEXT("r.AsyncReprojection.TimewarpMode"), static_cast<int32>(Settings->TimewarpMode));
 	SetInt(TEXT("r.AsyncReprojection.EnableRotationWarp"), Settings->bEnableRotationWarp ? 1 : 0);
 	SetInt(TEXT("r.AsyncReprojection.EnableTranslationWarp"), Settings->bEnableTranslationWarp ? 1 : 0);
 	SetInt(TEXT("r.AsyncReprojection.RequireDepthForTranslation"), Settings->bRequireDepthForTranslation ? 1 : 0);
@@ -225,6 +248,8 @@ void FAsyncReprojectionCVars::Init()
 	SetInt(TEXT("r.AsyncReprojection.AsyncPresent.MaxCacheAgeMs"), Settings->AsyncPresentMaxCacheAgeMs);
 	SetInt(TEXT("r.AsyncReprojection.AsyncPresent.AllowHUDStable"), Settings->bAsyncPresentAllowHUDStable ? 1 : 0);
 	SetInt(TEXT("r.AsyncReprojection.AsyncPresent.ReprojectMovement"), Settings->bAsyncPresentReprojectMovement ? 1 : 0);
+	SetInt(TEXT("r.AsyncReprojection.AsyncPresent.StretchBorders"), Settings->bAsyncPresentStretchBorders ? 1 : 0);
+	SetInt(TEXT("r.AsyncReprojection.AsyncPresent.OcclusionFallback"), Settings->bAsyncPresentOcclusionFallback ? 1 : 0);
 	SetInt(TEXT("r.AsyncReprojection.InputDrivenPose"), 1);
 	SetFloat(TEXT("r.AsyncReprojection.InputYawDegreesPerPixel"), 0.02f);
 	SetFloat(TEXT("r.AsyncReprojection.InputPitchDegreesPerPixel"), 0.02f);
@@ -258,12 +283,24 @@ static EAsyncReprojectionWarpPoint ToWarpPoint(int32 Value)
 	return Value == 1 ? EAsyncReprojectionWarpPoint::PostRenderViewFamily : EAsyncReprojectionWarpPoint::EndOfPostProcess;
 }
 
+static EAsyncReprojectionTimewarpMode ToTimewarpMode(int32 Value)
+{
+	switch (Value)
+	{
+	case 0: return EAsyncReprojectionTimewarpMode::FullRender;
+	case 1: return EAsyncReprojectionTimewarpMode::FreezeAndWarp;
+	case 2: return EAsyncReprojectionTimewarpMode::DecimatedNoWarp;
+	default: return EAsyncReprojectionTimewarpMode::DecimatedAndWarp;
+	}
+}
+
 FAsyncReprojectionCVarState FAsyncReprojectionCVars::Get()
 {
 	FAsyncReprojectionCVarState Out;
 
 	Out.Mode = ToMode(AsyncReprojectionCVars::CVarMode.GetValueOnAnyThread());
 	Out.WarpPoint = ToWarpPoint(AsyncReprojectionCVars::CVarWarpPoint.GetValueOnAnyThread());
+	Out.TimewarpMode = ToTimewarpMode(AsyncReprojectionCVars::CVarTimewarpMode.GetValueOnAnyThread());
 	Out.bEnableRotationWarp = AsyncReprojectionCVars::CVarEnableRotationWarp.GetValueOnAnyThread() != 0;
 	Out.bEnableTranslationWarp = AsyncReprojectionCVars::CVarEnableTranslationWarp.GetValueOnAnyThread() != 0;
 	Out.bRequireDepthForTranslation = AsyncReprojectionCVars::CVarRequireDepthForTranslation.GetValueOnAnyThread() != 0;
@@ -275,6 +312,8 @@ FAsyncReprojectionCVarState FAsyncReprojectionCVars::Get()
 	Out.AsyncPresentMaxCacheAgeMs = AsyncReprojectionCVars::CVarAsyncPresentMaxCacheAgeMs.GetValueOnAnyThread();
 	Out.bAsyncPresentAllowHUDStable = AsyncReprojectionCVars::CVarAsyncPresentAllowHUDStable.GetValueOnAnyThread() != 0;
 	Out.bAsyncPresentReprojectMovement = AsyncReprojectionCVars::CVarAsyncPresentReprojectMovement.GetValueOnAnyThread() != 0;
+	Out.bAsyncPresentStretchBorders = AsyncReprojectionCVars::CVarAsyncPresentStretchBorders.GetValueOnAnyThread() != 0;
+	Out.bAsyncPresentOcclusionFallback = AsyncReprojectionCVars::CVarAsyncPresentOcclusionFallback.GetValueOnAnyThread() != 0;
 
 	Out.bInputDrivenPose = AsyncReprojectionCVars::CVarInputDrivenPose.GetValueOnAnyThread() != 0;
 	Out.InputYawDegreesPerPixel = AsyncReprojectionCVars::CVarInputYawDegreesPerPixel.GetValueOnAnyThread();

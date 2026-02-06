@@ -16,6 +16,7 @@ This is **not** frame generation and does **not** increase simulation or render 
 All settings are mirrored as hot-reloadable CVars under `r.AsyncReprojection.*`. Common ones:
 
 - `r.AsyncReprojection.Mode` (`0=Off, 1=On, 2=Auto`)
+- `r.AsyncReprojection.TimewarpMode` (`0=FullRender, 1=FreezeAndWarp, 2=DecimatedNoWarp, 3=DecimatedAndWarp`)
 - `r.AsyncReprojection.EnableRotationWarp` (`0/1`)
 - `r.AsyncReprojection.EnableTranslationWarp` (`0/1`)
 - `r.AsyncReprojection.RequireDepthForTranslation` (`0/1`)
@@ -32,6 +33,8 @@ All settings are mirrored as hot-reloadable CVars under `r.AsyncReprojection.*`.
 - `r.AsyncReprojection.AsyncPresent.AllowHUDStable` (`0/1`) (attempt to warp before Slate UI so HUD stays stable)
 - `r.AsyncReprojection.AsyncPresent.HUDMaskThreshold` (UI preservation threshold in HUD-stable composite path)
 - `r.AsyncReprojection.AsyncPresent.ReprojectMovement` (`0/1`) (allow translation warp in cached present path)
+- `r.AsyncReprojection.AsyncPresent.StretchBorders` (`0/1`) (black borders when off, clamped/stretch sampling when on)
+- `r.AsyncReprojection.AsyncPresent.OcclusionFallback` (`0/1`) (local depth-neighbor fallback for disocclusion holes)
 
 ## How it works (high level)
 
@@ -48,11 +51,16 @@ In both cases the plugin:
 	- Depth-aware reprojection for translation.
 	- Rotation-only fallback when depth is missing/invalid.
 
-### AsyncPresent (cached reprojection at present rate)
+### AsyncPresent / Timewarp Modes
 
-When `r.AsyncReprojection.AsyncPresent 1` is enabled, the plugin can **decimate world rendering** (for example, render the 3D world at 10–30 FPS) while still letting the window present at (or near) the display refresh rate by **reusing a cached scene color + depth** and running only the warp pass on skipped frames.
+When async timewarp is enabled, the plugin can decimate world rendering while the window still presents near refresh by reusing a cached scene color + depth on skipped frames.
 
-This does not generate new content; it reprojects the last cached frame using the newest available camera transform.
+`r.AsyncReprojection.TimewarpMode` maps to Unity-style states:
+
+- `0 FullRender`: render world every frame (no cached skipped-frame path).
+- `1 FreezeAndWarp`: freeze world rendering and continuously warp frozen cached frame.
+- `2 DecimatedNoWarp`: render world at target cadence and present cached frame without warp between captures.
+- `3 DecimatedAndWarp`: render world at target cadence and warp cached frame between captures.
 
 ### Mapping choice (holes vs stability)
 
@@ -65,6 +73,7 @@ The depth-aware path uses an **inverse-mapping** approach (for each output pixel
 	- Toggle `r.AsyncReprojection.Mode 0/1/2` and evaluate “feel” when rapidly flicking the mouse.
 2. **AsyncPresent cached warp**
 	- `r.AsyncReprojection.AsyncPresent 1`
+	- `r.AsyncReprojection.TimewarpMode 3`
 	- `r.AsyncReprojection.AsyncPresent.TargetWorldRenderFPS 10`
 	- `r.AsyncReprojection.DebugOverlay 1`
 	- Expect the 3D world to update at the target cadence while the window remains responsive; on skipped frames, a small debug marker appears near the top-right (green when translation is active, red when rotation-only fallback is used).
@@ -78,7 +87,7 @@ The depth-aware path uses an **inverse-mapping** approach (for each output pixel
 	- If thin UI details disappear, lower `r.AsyncReprojection.AsyncPresent.HUDMaskThreshold` (for example `0.08 -> 0.04`).
 5. **Black flicker guard**
 	- Keep `r.AsyncReprojection.AsyncPresent 1` with skip active and verify no black flashes during camera motion.
-	- If cache becomes temporarily unavailable (resize/device transitions), expect one forced world-render recovery frame rather than black flicker.
+	- If cache becomes temporarily unavailable (resize/device transitions), expect fallback restoration or one forced world-render recovery frame rather than black flicker.
 6. **Depth missing fallback**
 	- Force a case where depth isn’t available and verify translation disables automatically.
 7. **GPU capture**

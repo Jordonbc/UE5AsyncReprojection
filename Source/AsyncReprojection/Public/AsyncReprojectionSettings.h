@@ -20,13 +20,19 @@ class ASYNCREPROJECTION_API UAsyncReprojectionSettings final : public UDeveloper
 
 public:
 	UPROPERTY(Config, EditAnywhere, Category = "AsyncReprojection")
-	EAsyncReprojectionMode Mode = EAsyncReprojectionMode::Auto;
+	EAsyncReprojectionMode Mode = EAsyncReprojectionMode::On;
+
+	/**
+	 * Unity-style async timewarp behavior profile.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "AsyncReprojection|AsyncPresent")
+	EAsyncReprojectionTimewarpMode TimewarpMode = EAsyncReprojectionTimewarpMode::DecimatedAndWarp;
 
 	/**
 	 * Enables Async Present (reproject cached scene image on intermediate frames while world rendering is decimated).
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "AsyncReprojection|AsyncPresent")
-	bool bAsyncPresent = false;
+	bool bAsyncPresent = true;
 
 	/**
 	 * Target world render FPS when Async Present is enabled. The engine can still present more frequently if able.
@@ -57,6 +63,18 @@ public:
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "AsyncReprojection|AsyncPresent")
 	bool bAsyncPresentReprojectMovement = true;
+
+	/**
+	 * If enabled, out-of-bounds samples are stretched/clamped instead of returning black borders.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "AsyncReprojection|AsyncPresent")
+	bool bAsyncPresentStretchBorders = false;
+
+	/**
+	 * If enabled, applies a local depth-based neighbor fallback to reduce disocclusion holes.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "AsyncReprojection|AsyncPresent")
+	bool bAsyncPresentOcclusionFallback = true;
 
 	UPROPERTY(Config, EditAnywhere, Category = "AsyncReprojection|Features")
 	bool bEnableRotationWarp = true;
