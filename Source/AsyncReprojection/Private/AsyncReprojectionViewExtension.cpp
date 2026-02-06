@@ -370,7 +370,8 @@ void FAsyncReprojectionViewExtension::SubscribeToPostProcessingPass(
 	bool bIsPassEnabled)
 {
 	const FAsyncReprojectionCVarState CVarState = FAsyncReprojectionCVars::Get();
-	const bool bWantsAfterPassCallback = (CVarState.WarpPoint == EAsyncReprojectionWarpPoint::EndOfPostProcess) || CVarState.bAsyncPresent;
+	const bool bAsyncPipelineEnabled = CVarState.bAsyncPresent || CVarState.TimewarpMode != EAsyncReprojectionTimewarpMode::FullRender;
+	const bool bWantsAfterPassCallback = (CVarState.WarpPoint == EAsyncReprojectionWarpPoint::EndOfPostProcess) || bAsyncPipelineEnabled;
 	if (!bWantsAfterPassCallback)
 	{
 		return;
@@ -435,7 +436,8 @@ FScreenPassTexture FAsyncReprojectionViewExtension::PostProcessPass_RenderThread
 		return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 	}
 
-	if (CVarState.bAsyncPresent)
+	const bool bAsyncPipelineEnabled = CVarState.bAsyncPresent || CVarState.TimewarpMode != EAsyncReprojectionTimewarpMode::FullRender;
+	if (bAsyncPipelineEnabled)
 	{
 		FAsyncReprojectionFrameCache::Get().Update_RenderThread(GraphBuilder, View, Inputs);
 	}
@@ -452,7 +454,7 @@ FScreenPassTexture FAsyncReprojectionViewExtension::PostProcessPass_RenderThread
 				return Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 			}
 			
-			Overlay.bAsyncPresentEnabled = CVarState.bAsyncPresent;
+			Overlay.bAsyncPresentEnabled = bAsyncPipelineEnabled;
 
 			FScreenPassTexture SceneColor = Inputs.ReturnUntouchedSceneColorForPostProcessing(GraphBuilder);
 			const FScreenPassRenderTarget Output = Inputs.OverrideOutput.IsValid()

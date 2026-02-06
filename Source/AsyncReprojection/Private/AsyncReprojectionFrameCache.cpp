@@ -52,7 +52,8 @@ FAsyncReprojectionFrameCache& FAsyncReprojectionFrameCache::Get()
 void FAsyncReprojectionFrameCache::Update_RenderThread(FRDGBuilder& GraphBuilder, const FSceneView& View, const FPostProcessMaterialInputs& Inputs)
 {
 	const FAsyncReprojectionCVarState CVarState = FAsyncReprojectionCVars::Get();
-	if (!CVarState.bAsyncPresent)
+	const bool bAsyncPipelineEnabled = CVarState.bAsyncPresent || CVarState.TimewarpMode != EAsyncReprojectionTimewarpMode::FullRender;
+	if (!bAsyncPipelineEnabled)
 	{
 		return;
 	}

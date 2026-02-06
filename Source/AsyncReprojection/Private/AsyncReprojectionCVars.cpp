@@ -103,7 +103,7 @@ namespace AsyncReprojectionCVars
 
 	static TAutoConsoleVariable<int32> CVarAsyncPresentStretchBorders(
 		TEXT("r.AsyncReprojection.AsyncPresent.StretchBorders"),
-		0,
+		1,
 		TEXT("Async Present: stretch/clamp out-of-bounds samples instead of returning black borders.\n"),
 		ECVF_RenderThreadSafe);
 

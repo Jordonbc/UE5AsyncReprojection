@@ -68,7 +68,7 @@ public:
 	 * If enabled, out-of-bounds samples are stretched/clamped instead of returning black borders.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "AsyncReprojection|AsyncPresent")
-	bool bAsyncPresentStretchBorders = false;
+	bool bAsyncPresentStretchBorders = true;
 
 	/**
 	 * If enabled, applies a local depth-based neighbor fallback to reduce disocclusion holes.

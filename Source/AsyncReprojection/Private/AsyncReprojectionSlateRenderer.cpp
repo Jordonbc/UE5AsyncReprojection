@@ -160,7 +160,8 @@ void FAsyncReprojectionSlateRenderer::RestoreSystemResolution(const TSharedRef<S
 void FAsyncReprojectionSlateRenderer::DrawWindows(FSlateDrawBuffer& InWindowDrawBuffer)
 {
 	const FAsyncReprojectionCVarState CVarState = FAsyncReprojectionCVars::Get();
-	const bool bDoAsyncPresent = CVarState.bAsyncPresent && CVarState.bAsyncPresentAllowHUDStable && FAsyncReprojectionAsyncPresent::Get().ShouldSkipWorldRendering();
+	const bool bAsyncPipelineEnabled = CVarState.bAsyncPresent || CVarState.TimewarpMode != EAsyncReprojectionTimewarpMode::FullRender;
+	const bool bDoAsyncPresent = bAsyncPipelineEnabled && CVarState.bAsyncPresentAllowHUDStable && FAsyncReprojectionAsyncPresent::Get().ShouldSkipWorldRendering();
 
 	if (bDoAsyncPresent)
 	{
