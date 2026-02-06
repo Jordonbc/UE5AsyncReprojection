@@ -1,0 +1,55 @@
+// Copyright © 2023–2026 Segritude Ltd. All Rights Reserved.
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+Texture2D BackBufferTexture;
+SamplerState BackBufferSampler;
+
+float4 ViewRectMinAndSize;
+float4x4 ViewToClip;
+float4x4 ClipToView;
+float4x4 DeltaRotationInv4x4;
+float WarpWeight;
+float2 BackBufferInvSize;
+
+static float2 PixelToNDC(float2 PixelCenter, float2 ViewRectMin, float2 ViewRectSize)
+{
+	const float2 UV = (PixelCenter - ViewRectMin) / ViewRectSize;
+	return UV * 2.0f - 1.0f;
+}
+
+static float2 NDCToPixel(float2 NDC, float2 ViewRectMin, float2 ViewRectSize)
+{
+	return (NDC * 0.5f + 0.5f) * ViewRectSize + ViewRectMin;
+}
+
+void MainPS(
+	in FScreenVertexOutput In,
+	out float4 OutColor : SV_Target0)
+{
+	const float2 ViewRectMin = ViewRectMinAndSize.xy;
+	const float2 ViewRectSize = ViewRectMinAndSize.zw;
+
+	const float2 OutPixelCenter = In.Position.xy;
+	const float2 OutNDC = PixelToNDC(OutPixelCenter, ViewRectMin, ViewRectSize);
+
+	float4 LatestViewPos = mul(float4(OutNDC, 1.0f, 1.0f), ClipToView);
+	LatestViewPos.xyz /= max(LatestViewPos.w, 1e-6f);
+
+	const float3x3 DeltaRotationInv = (float3x3)DeltaRotationInv4x4;
+	const float3 RenderedViewPos = mul(DeltaRotationInv, LatestViewPos.xyz);
+
+	const float4 RenderedClip = mul(float4(RenderedViewPos, 1.0f), ViewToClip);
+	const float2 RenderedNDC = RenderedClip.xy / max(RenderedClip.w, 1e-6f);
+	const float2 SourcePixelCenter = NDCToPixel(RenderedNDC, ViewRectMin, ViewRectSize);
+
+	const float2 UnwarpedUV = OutPixelCenter * BackBufferInvSize;
+	const float3 UnwarpedColor = BackBufferTexture.SampleLevel(BackBufferSampler, UnwarpedUV, 0).rgb;
+
+	const float2 SourceUV = SourcePixelCenter * BackBufferInvSize;
+	const float3 WarpedColor = BackBufferTexture.SampleLevel(BackBufferSampler, SourceUV, 0).rgb;
+
+	const float Weight = saturate(WarpWeight);
+	OutColor = float4(lerp(UnwarpedColor, WarpedColor, Weight), 1.0f);
+}

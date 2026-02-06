@@ -1,0 +1,105 @@
+// Copyright © 2023–2026 Segritude Ltd. All Rights Reserved.
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+#include "/Engine/Private/PositionReconstructionCommon.ush"
+#include "/Engine/Private/SceneTexturesCommon.ush"
+
+Texture2D SceneColorTexture;
+SamplerState SceneColorSampler;
+
+float4x4 TranslatedWorldToLatestClip;
+float4x4 DeltaRotationInv4x4;
+float WarpWeight;
+float2 SceneColorInvSize;
+
+static float2 PixelToNDC(float2 PixelCenter, float2 ViewRectMin, float2 ViewRectSize)
+{
+	const float2 UV = (PixelCenter - ViewRectMin) / ViewRectSize;
+	return UV * 2.0f - 1.0f;
+}
+
+static float2 NDCToPixel(float2 NDC, float2 ViewRectMin, float2 ViewRectSize)
+{
+	return (NDC * 0.5f + 0.5f) * ViewRectSize + ViewRectMin;
+}
+
+static float2 ComputeRotationOnlySourcePixel(float2 OutPixelCenter, float2 ViewRectMin, float2 ViewRectSize)
+{
+	const float2 OutNDC = PixelToNDC(OutPixelCenter, ViewRectMin, ViewRectSize);
+	float4 LatestViewPos = mul(float4(OutNDC, 1.0f, 1.0f), View.ClipToView);
+	LatestViewPos.xyz /= max(LatestViewPos.w, 1e-6f);
+
+	const float3x3 DeltaRotationInv = (float3x3)DeltaRotationInv4x4;
+	const float3 RenderedViewPos = mul(DeltaRotationInv, LatestViewPos.xyz);
+	const float4 RenderedClip = mul(float4(RenderedViewPos, 1.0f), View.ViewToClip);
+	const float2 RenderedNDC = RenderedClip.xy / max(RenderedClip.w, 1e-6f);
+	return NDCToPixel(RenderedNDC, ViewRectMin, ViewRectSize);
+}
+
+void MainPS(
+	in FScreenVertexOutput In,
+	out float4 OutColor : SV_Target0)
+{
+	const float2 ViewRectMin = float2(View.ViewRectMinAndSize.xy);
+	const float2 ViewRectSize = float2(View.ViewRectMinAndSize.zw);
+
+	const float2 OutPixelCenter = In.Position.xy;
+	const float2 OutPixelCoord = OutPixelCenter - 0.5f;
+
+	const float2 UnwarpedUV = OutPixelCenter * SceneColorInvSize;
+	const float3 UnwarpedColor = SceneColorTexture.SampleLevel(SceneColorSampler, UnwarpedUV, 0).rgb;
+
+	float2 SourcePixelCoord = OutPixelCoord;
+	bool bUseRotationOnly = false;
+
+#if USE_TRANSLATION
+	[loop]
+	for (int Iter = 0; Iter < 2; Iter++)
+	{
+		const float2 SourcePixelCenter = SourcePixelCoord + 0.5f;
+		const float2 DepthUV = SourcePixelCenter * View.BufferSizeAndInvSize.zw;
+		const float DeviceZ = LookupDeviceZ(DepthUV);
+		if (DeviceZ <= 0.0f)
+		{
+			bUseRotationOnly = true;
+			break;
+		}
+
+		float4 TranslatedWorldPos = mul(float4(SourcePixelCenter, DeviceZ, 1.0f), View.SVPositionToTranslatedWorld);
+		TranslatedWorldPos.xyz /= max(TranslatedWorldPos.w, 1e-6f);
+
+		const float4 LatestClip = mul(float4(TranslatedWorldPos.xyz, 1.0f), TranslatedWorldToLatestClip);
+		if (LatestClip.w <= 1e-6f)
+		{
+			bUseRotationOnly = true;
+			break;
+		}
+
+		const float2 LatestNDC = LatestClip.xy / LatestClip.w;
+		const float2 LatestPixelCenter = NDCToPixel(LatestNDC, ViewRectMin, ViewRectSize);
+
+		const float2 Error = LatestPixelCenter - OutPixelCenter;
+		SourcePixelCoord -= Error;
+
+		const float2 MinCoord = ViewRectMin;
+		const float2 MaxCoord = ViewRectMin + ViewRectSize - 1.0f;
+		SourcePixelCoord = clamp(SourcePixelCoord, MinCoord, MaxCoord);
+	}
+#else
+	bUseRotationOnly = true;
+#endif
+
+	if (bUseRotationOnly)
+	{
+		const float2 SourcePixelCenter = ComputeRotationOnlySourcePixel(OutPixelCenter, ViewRectMin, ViewRectSize);
+		SourcePixelCoord = SourcePixelCenter - 0.5f;
+	}
+
+	const float2 SourcePixelCenter = SourcePixelCoord + 0.5f;
+	const float2 SourceUV = SourcePixelCenter * SceneColorInvSize;
+	const float3 WarpedColor = SceneColorTexture.SampleLevel(SceneColorSampler, SourceUV, 0).rgb;
+
+	const float Weight = saturate(WarpWeight);
+	OutColor = float4(lerp(UnwarpedColor, WarpedColor, Weight), 1.0f);
+}

@@ -1,0 +1,146 @@
+// Copyright © 2023–2026 Segritude Ltd. All Rights Reserved.
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/ScreenPass.ush"
+
+Texture2D CachedColorTexture;
+SamplerState CachedColorSampler;
+
+Texture2D<float> CachedDepthDeviceZTexture;
+SamplerState CachedDepthSampler;
+
+Texture2D UiTexture;
+SamplerState UiSampler;
+
+float4x4 RenderedSVPositionToTranslatedWorld;
+float4x4 TranslatedWorldToLatestClip;
+float4x4 DeltaRotationInv4x4;
+float4x4 ViewToClip;
+float4x4 ClipToView;
+
+float4 ViewRectMinAndSize;
+float4 BufferSizeAndInvSize;
+
+float WarpWeight;
+float2 CachedInvSize;
+float2 UiInvSize;
+float UiMaskThreshold;
+uint DebugOverlay;
+
+static float2 PixelToNDC(float2 PixelCenter)
+{
+	const float2 ViewRectMin = ViewRectMinAndSize.xy;
+	const float2 ViewRectSize = ViewRectMinAndSize.zw;
+	const float2 UV = (PixelCenter - ViewRectMin) / ViewRectSize;
+	return UV * 2.0f - 1.0f;
+}
+
+static float2 NDCToPixel(float2 NDC)
+{
+	const float2 ViewRectMin = ViewRectMinAndSize.xy;
+	const float2 ViewRectSize = ViewRectMinAndSize.zw;
+	return (NDC * 0.5f + 0.5f) * ViewRectSize + ViewRectMin;
+}
+
+static float2 ComputeRotationOnlySourcePixel(float2 OutPixelCenter)
+{
+	const float2 OutNDC = PixelToNDC(OutPixelCenter);
+	float4 LatestViewPos = mul(float4(OutNDC, 1.0f, 1.0f), ClipToView);
+	LatestViewPos.xyz /= max(LatestViewPos.w, 1e-6f);
+
+	const float3x3 DeltaRotationInv = (float3x3)DeltaRotationInv4x4;
+	const float3 RenderedViewPos = mul(DeltaRotationInv, LatestViewPos.xyz);
+	const float4 RenderedClip = mul(float4(RenderedViewPos, 1.0f), ViewToClip);
+	const float2 RenderedNDC = RenderedClip.xy / max(RenderedClip.w, 1e-6f);
+	return NDCToPixel(RenderedNDC);
+}
+
+static float ComputeUiMask(float4 UiColor, float3 WarpedWorldColor)
+{
+	const float3 UiDelta = abs(UiColor.rgb - WarpedWorldColor);
+	const float WorldDelta = max(max(UiDelta.r, UiDelta.g), UiDelta.b);
+	const float AlphaAssist = (UiColor.a < 0.999f) ? UiColor.a : 0.0f;
+	const float UiSignal = max(WorldDelta, AlphaAssist);
+	return step(UiMaskThreshold, UiSignal);
+}
+
+void MainPS(
+	in FScreenVertexOutput In,
+	out float4 OutColor : SV_Target0)
+{
+	const float2 OutPixelCenter = In.Position.xy;
+	const float2 OutPixelCoord = OutPixelCenter - 0.5f;
+
+	const float2 UiUV = OutPixelCenter * UiInvSize;
+	const float4 UiColor = UiTexture.SampleLevel(UiSampler, UiUV, 0);
+
+	const float2 UnwarpedWorldUV = OutPixelCenter * CachedInvSize;
+	const float3 UnwarpedWorldColor = CachedColorTexture.SampleLevel(CachedColorSampler, UnwarpedWorldUV, 0).rgb;
+
+	float2 SourcePixelCoord = OutPixelCoord;
+	bool bUseRotationOnly = false;
+
+#if USE_TRANSLATION
+	[loop]
+	for (int Iter = 0; Iter < 2; Iter++)
+	{
+		const float2 SourcePixelCenter = SourcePixelCoord + 0.5f;
+		const float2 DepthUV = SourcePixelCenter * BufferSizeAndInvSize.zw;
+		const float DeviceZ = CachedDepthDeviceZTexture.SampleLevel(CachedDepthSampler, DepthUV, 0);
+		if (DeviceZ <= 0.0f)
+		{
+			bUseRotationOnly = true;
+			break;
+		}
+
+		float4 TranslatedWorldPos = mul(float4(SourcePixelCenter, DeviceZ, 1.0f), RenderedSVPositionToTranslatedWorld);
+		TranslatedWorldPos.xyz /= max(TranslatedWorldPos.w, 1e-6f);
+
+		const float4 LatestClip = mul(float4(TranslatedWorldPos.xyz, 1.0f), TranslatedWorldToLatestClip);
+		if (LatestClip.w <= 1e-6f)
+		{
+			bUseRotationOnly = true;
+			break;
+		}
+
+		const float2 LatestNDC = LatestClip.xy / LatestClip.w;
+		const float2 LatestPixelCenter = NDCToPixel(LatestNDC);
+
+		const float2 Error = LatestPixelCenter - OutPixelCenter;
+		SourcePixelCoord -= Error;
+
+		const float2 MinCoord = ViewRectMinAndSize.xy;
+		const float2 MaxCoord = ViewRectMinAndSize.xy + ViewRectMinAndSize.zw - 1.0f;
+		SourcePixelCoord = clamp(SourcePixelCoord, MinCoord, MaxCoord);
+	}
+#else
+	bUseRotationOnly = true;
+#endif
+
+	if (bUseRotationOnly)
+	{
+		const float2 SourcePixelCenter = ComputeRotationOnlySourcePixel(OutPixelCenter);
+		SourcePixelCoord = SourcePixelCenter - 0.5f;
+	}
+
+	const float2 SourcePixelCenter = SourcePixelCoord + 0.5f;
+	const float2 SourceUV = SourcePixelCenter * CachedInvSize;
+	const float3 WarpedWorldColor = CachedColorTexture.SampleLevel(CachedColorSampler, SourceUV, 0).rgb;
+
+	const float Weight = saturate(WarpWeight);
+	const float3 WorldColor = lerp(UnwarpedWorldColor, WarpedWorldColor, Weight);
+
+	const float UiMask = ComputeUiMask(UiColor, WarpedWorldColor);
+	const float3 Composite = lerp(WorldColor, UiColor.rgb, UiMask);
+	OutColor = float4(Composite, 1.0f);
+
+	if (DebugOverlay != 0)
+	{
+		const bool bMarker = (UiUV.x > 0.985f && UiUV.y < 0.015f);
+		if (bMarker)
+		{
+			const float3 MarkerColor = bUseRotationOnly ? float3(1.0f, 0.25f, 0.25f) : float3(0.25f, 1.0f, 0.25f);
+			OutColor.rgb = lerp(OutColor.rgb, MarkerColor, 0.65f);
+		}
+	}
+}

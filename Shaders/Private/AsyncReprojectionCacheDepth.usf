@@ -1,0 +1,24 @@
+// Copyright © 2023–2026 Segritude Ltd. All Rights Reserved.
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/SceneTexturesCommon.ush"
+
+RWTexture2D<float> OutDeviceZ;
+
+float4 BufferSizeAndInvSize;
+
+[numthreads(8, 8, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const uint2 Pixel = DispatchThreadId.xy;
+	if (Pixel.x >= (uint)BufferSizeAndInvSize.x || Pixel.y >= (uint)BufferSizeAndInvSize.y)
+	{
+		return;
+	}
+
+	const float2 UV = (float2(Pixel) + 0.5f) * BufferSizeAndInvSize.zw;
+	const float DeviceZ = LookupDeviceZ(UV);
+
+	OutDeviceZ[Pixel] = DeviceZ;
+}
+

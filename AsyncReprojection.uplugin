@@ -1,0 +1,29 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "AsyncReprojection",
+	"Description": "Optional low-latency view reprojection (late warp) that reprojects the final rendered scene image using the newest camera transform. Not frame generation.",
+	"Category": "Rendering",
+	"CreatedBy": "Jordon Brooks",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "AsyncReprojection",
+			"Type": "Runtime",
+			"LoadingPhase": "PostConfigInit",
+			"TargetAllowList": [
+				"Editor",
+				"Client",
+				"Game"
+			]
+		}
+	]
+}
